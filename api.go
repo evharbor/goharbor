@@ -2,12 +2,12 @@ package goharbor
 
 import (
 	"bytes"
-	"encoding/json"
+	"errors"
 	"io/ioutil"
 	"strconv"
 	"strings"
 
-	"github.com/levigross/grequests"
+	"goharbor/grequests"
 )
 
 // MetadataStruct 对象元数据
@@ -22,69 +22,6 @@ type MetadataStruct struct {
 	DownloadCount    uint32 `json:"dlc"`                    //下载次数
 	DownloadURL      string `json:"download_url,omitempty"` // 下载url
 	AccessPermission string `json:"access_permission"`      // 访问权限
-}
-
-// ErrorReq 请求错误类型
-type ErrorReq struct {
-	CodeText string `json:"code_text,omitempty"`
-	Code     int    `json:"code"`
-}
-
-// ErrorDetail json error
-func (r ErrorReq) ErrorDetail() string {
-
-	msg, _ := json.Marshal(r)
-	return string(msg)
-}
-
-// Error 错误信息 实现error interface
-func (r ErrorReq) Error() string {
-
-	return r.CodeText
-}
-
-// HTTPCode 状态码
-func (r ErrorReq) HTTPCode() int {
-
-	return r.Code
-}
-
-func parseResponseError(e *ErrorReq, r *grequests.Response) {
-
-	var ret struct {
-		CodeText string `json:"code_text,omitempty"`
-		Detail   string `json:"detail,omitempty"`
-	}
-	err := r.JSON(ret)
-	if err != nil {
-		e.CodeText = ""
-	}
-
-	if ret.CodeText != "" {
-		e.CodeText = ret.CodeText
-		return
-	}
-	if ret.Detail != "" {
-		e.CodeText = ret.Detail
-		return
-	}
-
-	e.CodeText = r.String()
-}
-
-// ResponseError 获取请求错误
-func ResponseError(resp *grequests.Response) *ErrorReq {
-
-	e := &ErrorReq{
-		Code: resp.StatusCode,
-	}
-	if resp.StatusCode > 299 {
-		ct, ok := resp.Header["Content-Type"]
-		if ok && strings.HasPrefix(ct[0], "application/json") {
-			parseResponseError(e, resp)
-		}
-	}
-	return e
 }
 
 // APIWrapper EVHarbor API wrapper
@@ -114,6 +51,10 @@ func (api APIWrapper) GetMetadata(bucketName, pathName string) (*grequests.Respo
 // param offset: 数据块在对象中的字节偏移量
 // param chunk: 数据块
 func (api APIWrapper) UploadOneChunk(bucketName, dirPath, objName string, offset int64, chunk []byte) (*grequests.Response, error) {
+	if strings.Contains(objName, "/") {
+		return nil, errors.New("Object name can not contains '/'")
+	}
+
 	req := RequestStruct{configs: api.configs}
 	builder := apiBuilderStruct{configs: api.configs}
 	url := builder.buildObjAPI(bucketName, dirPath, objName, nil)
@@ -122,6 +63,7 @@ func (api APIWrapper) UploadOneChunk(bucketName, dirPath, objName string, offset
 		{
 			FileContents: ioutil.NopCloser(bytes.NewReader(chunk)),
 			FieldName:    "chunk",
+			FileMime:     "application/octet-stream",
 		},
 	}
 	ro := &grequests.RequestOptions{
@@ -132,6 +74,29 @@ func (api APIWrapper) UploadOneChunk(bucketName, dirPath, objName string, offset
 		Files: files,
 	}
 	r, err := req.Put(url, ro)
+	if err != nil {
+		return nil, err
+	}
+
+	return r, nil
+}
+
+// DownloadOneChunk 下载一个对象数据块
+// param bucketName: 桶名称
+// param dirPath: 桶下对象所在路径
+// param objName: 对象名称
+// param offset: 数据块在对象中的字节偏移量
+// param size: 要下载的分片大小
+func (api APIWrapper) DownloadOneChunk(bucketName, dirPath, objName string, offset int64, size int) (*grequests.Response, error) {
+	req := RequestStruct{configs: api.configs}
+	builder := apiBuilderStruct{configs: api.configs}
+	params := &map[string]string{
+		"offset": strconv.FormatInt(offset, 10),
+		"size":   strconv.Itoa(size),
+	}
+	url := builder.buildObjAPI(bucketName, dirPath, objName, params)
+
+	r, err := req.Get(url, nil)
 	if err != nil {
 		return nil, err
 	}

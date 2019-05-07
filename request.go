@@ -4,8 +4,9 @@ import (
 	"net/url"
 	"strings"
 
+	"goharbor/grequests"
+
 	"github.com/google/go-querystring/query"
-	"github.com/levigross/grequests"
 )
 
 // RequestStruct 请求结构体
