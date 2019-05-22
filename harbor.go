@@ -4,8 +4,12 @@ Package goharbor 是一个简单封装了EVHarbor RESTFULL API的golang包
 package goharbor
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -329,6 +333,208 @@ func (client ClientStruct) DownloadOneChunk(bucketName, objPathName string, offs
 		}
 	}
 	cr.Chunk = resp.Bytes()
+	if int64(len(cr.Chunk)) != cr.ChunkSize {
+		cr.Ok = false
+		cr.CodeText = "应返回的数据长度和实际下载的数据长度不一致"
+	}
 
 	return cr, nil
+}
+
+// ObjReturn 对象上传或下载结果
+type ObjReturn struct {
+	Results
+	Offset  int64 // 已完成对象上传或下载的偏移量
+	ObjSize int64 // 对象大小
+}
+
+// IsDone 对象上传或下载是否完成
+func (o ObjReturn) IsDone() bool {
+	if o.Ok && o.Offset == o.ObjSize {
+		return true
+	}
+	return false
+}
+
+// PathExists 文件或目录是否存在
+// return:
+// 		true and nil,说明文件或文件夹存在
+//		false and nil, 不存在
+// 		error != nil ,则不确定是否存在
+func PathExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+// DirExists 目录是否存在
+// return:
+// 		true and nil,文件夹存在
+//		false and nil, 不存在
+// 		error != nil ,则不确定是否存在
+func DirExists(path string) (bool, error) {
+	fi, err := os.Stat(path)
+	if err == nil {
+		if fi.Mode().IsDir() {
+			return true, nil
+		}
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+// DownLoadObject 下载一个对象
+// param bucketName: 桶名称
+// param objPathName: 桶下全路径对象名称
+// param savePath: 下载的对象保存的目录路径
+// param saveFilename: 下载对象保存的新文件名，为空字符串，使用对象名称
+// param startOffset: 从对象的此偏移量处开始下载
+func (client ClientStruct) DownLoadObject(bucketName, objPathName, savePath string, saveFilename string, startOffset int64) (*ObjReturn, error) {
+	var offset int64
+	var readSize = 1024 * 1024 * 10 //10Mb
+	if startOffset < 0 {
+		offset = 0
+	} else {
+		offset = startOffset
+	}
+
+	// 目录路径不存在存在则创建
+	dirPath := filepath.Clean(savePath)
+	if exist, _ := DirExists(dirPath); !exist {
+		err := os.MkdirAll(dirPath, os.ModeDir)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// 保存文件名
+	var fileName string
+	if saveFilename == "" {
+		_, fileName = filepath.Split(objPathName)
+	} else {
+		if strings.IndexByte(saveFilename, filepath.Separator) >= 0 {
+			return nil, errors.New("saveFilename不能包含路径分隔符")
+		}
+		fileName = saveFilename
+	}
+	filePathName := filepath.Join(dirPath, fileName)
+	saveFile, err := os.Create(filePathName)
+	if err != nil {
+		return nil, err
+	}
+	defer saveFile.Close()
+
+	ret := &ObjReturn{ObjSize: -1}
+	var retErr error
+	for {
+		r, err := client.DownloadOneChunk(bucketName, objPathName, offset, readSize)
+		if err != nil {
+			retErr = err
+			break
+		}
+
+		if !r.Ok {
+			ret.Results = r.Results
+			break
+		}
+		ret.ObjSize = r.ObjSize
+		if offset >= ret.ObjSize {
+			retErr = errors.New("offset超出了对象大小")
+			break
+		}
+
+		s, err := saveFile.Seek(offset, os.SEEK_SET)
+		if err != nil {
+			retErr = err
+			break
+		}
+		if s != offset {
+			retErr = errors.New("seek文件偏移量错误")
+			break
+		}
+		writedSize, err := saveFile.Write(r.Chunk)
+		if err != nil {
+			retErr = err
+			break
+		}
+		offset += int64(writedSize)
+		if offset >= ret.ObjSize { // 下载完成
+			ret.CodeText = "download ok"
+			ret.Ok = true
+			break
+		}
+	}
+	ret.Offset = offset
+	return ret, retErr
+}
+
+// UploadObject 上传一个对象
+// param bucketName: 桶名称
+// param objPathName: 桶下全路径对象名称
+// param fileName: 要上传的文件路径
+// param startOffset: 从文件的此偏移量处开始上传
+func (client ClientStruct) UploadObject(bucketName, objPathName, fileName string, startOffset int64) (*ObjReturn, error) {
+	var offset int64
+	var readSize = 1024 * 1024 * 10 //10Mb
+	if startOffset < 0 {
+		offset = 0
+	} else {
+		offset = startOffset
+	}
+
+	file, err := os.Open(fileName)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	// 文件偏移量设置
+	s, err := file.Seek(offset, os.SEEK_SET)
+	if err != nil {
+		return nil, err
+	}
+	if s != offset {
+		return nil, errors.New("seek文件偏移量错误")
+	}
+
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	ret := &ObjReturn{ObjSize: fileInfo.Size()}
+	var retErr error
+	inputReader := bufio.NewReader(file)
+	readSize = 1024 * 1024 * 5    //5Mb
+	buf := make([]byte, readSize) //5Mb
+	for {
+		retSize, err := io.ReadFull(inputReader, buf)
+		if (err != nil) && (err != io.ErrUnexpectedEOF) {
+			retErr = err
+			break
+		}
+		r, err := client.UploadOneChunk(bucketName, objPathName, offset, buf[0:retSize])
+		if err != nil {
+			retErr = err
+			break
+		}
+		if !r.Ok {
+			ret.Results = *r
+			break
+		}
+		offset += int64(retSize)
+		if offset >= ret.ObjSize {
+			ret.CodeText = "upload ok"
+			ret.Ok = true
+			break
+		}
+	}
+	ret.Offset = offset
+	return ret, retErr
 }

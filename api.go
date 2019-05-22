@@ -73,7 +73,7 @@ func (api APIWrapper) UploadOneChunk(bucketName, dirPath, objName string, offset
 		},
 		Files: files,
 	}
-	r, err := req.Put(url, ro)
+	r, err := req.Post(url, ro)
 	if err != nil {
 		return nil, err
 	}
