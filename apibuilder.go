@@ -12,7 +12,7 @@ type apiBuilderStruct struct {
 func buildPath(slice []string) string {
 	a := []string{}
 	for _, value := range slice {
-		if value != "" {
+		if v := strings.Trim(value, "/"); v != "" {
 			a = append(a, value)
 		}
 	}

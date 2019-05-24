@@ -4,7 +4,6 @@ Package goharbor 是一个简单封装了EVHarbor RESTFULL API的golang包
 package goharbor
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"io"
@@ -94,26 +93,6 @@ func InitConfig(c map[ConfigKeyType]string) (config ConfigStruct, err error) {
 	}
 	err = nil
 	return
-}
-
-// CutPathAndName 切割一个路径，return 父路经和文件目录名称
-func CutPathAndName(pathName string) (string, string) {
-
-	i := strings.LastIndex(pathName, "/")
-	if i >= 0 {
-		return pathName[:i], pathName[i+1:]
-	}
-	return "", pathName
-}
-
-// JSON2map json转换为map
-func JSON2map(data []byte) (map[string]interface{}, error) {
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
 }
 
 // ObjChunk 对象分片
@@ -227,10 +206,15 @@ func InitClient(configs ConfigStruct) ClientStruct {
 	return client
 }
 
+// GetConfigs 获取配置信息
+func (client ClientStruct) GetConfigs() ConfigStruct {
+	return client.API.configs
+}
+
 // ObjMetadataReturn 对象或目录元数据返回结果
 type ObjMetadataReturn struct {
 	Results
-	Data MetadataStruct `json:"data"`
+	Data MetadataStruct `json:"data,omitempty"`
 }
 
 // GetMetadata 获取元数据
@@ -356,40 +340,6 @@ func (o ObjReturn) IsDone() bool {
 	return false
 }
 
-// PathExists 文件或目录是否存在
-// return:
-// 		true and nil,说明文件或文件夹存在
-//		false and nil, 不存在
-// 		error != nil ,则不确定是否存在
-func PathExists(path string) (bool, error) {
-	_, err := os.Stat(path)
-	if err == nil {
-		return true, nil
-	}
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	return false, err
-}
-
-// DirExists 目录是否存在
-// return:
-// 		true and nil,文件夹存在
-//		false and nil, 不存在
-// 		error != nil ,则不确定是否存在
-func DirExists(path string) (bool, error) {
-	fi, err := os.Stat(path)
-	if err == nil {
-		if fi.Mode().IsDir() {
-			return true, nil
-		}
-	}
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	return false, err
-}
-
 // DownLoadObject 下载一个对象
 // param bucketName: 桶名称
 // param objPathName: 桶下全路径对象名称
@@ -510,11 +460,11 @@ func (client ClientStruct) UploadObject(bucketName, objPathName, fileName string
 	}
 	ret := &ObjReturn{ObjSize: fileInfo.Size()}
 	var retErr error
-	inputReader := bufio.NewReader(file)
+	// inputReader := bufio.NewReader(file)
 	readSize = 1024 * 1024 * 5    //5Mb
 	buf := make([]byte, readSize) //5Mb
 	for {
-		retSize, err := io.ReadFull(inputReader, buf)
+		retSize, err := io.ReadFull(file, buf)
 		if (err != nil) && (err != io.ErrUnexpectedEOF) {
 			retErr = err
 			break
@@ -537,4 +487,391 @@ func (client ClientStruct) UploadObject(bucketName, objPathName, fileName string
 	}
 	ret.Offset = offset
 	return ret, retErr
+}
+
+// DeleteObject 删除一个对象
+// param bucketName: 桶名称
+// param objPathName: 桶下全路径对象名称
+func (client ClientStruct) DeleteObject(bucketName, objPathName string) (*Results, error) {
+
+	dirPath, objName := CutPathAndName(objPathName)
+	resp, err := client.API.DeleteObject(bucketName, dirPath, objName)
+	if err != nil {
+		return nil, err
+	}
+
+	result := ResponseResult(resp)
+	if resp.StatusCode != 204 {
+		result.Ok = false
+		if result.CodeText == "" {
+			result.CodeText = "Failed to delete object"
+		}
+	}
+	return result, nil
+}
+
+// MoveRenameReturn 移动重命名返回结构体
+type MoveRenameReturn struct {
+	Results
+	BucketName string         `json:"bucket_name,omitempty"`
+	DirPath    string         `json:"dir_path,omitempty"`
+	Obj        MetadataStruct `json:"obj,omitempty"`
+}
+
+// MoveRenameObject 移动或重命名一个对象
+// param bucket_name: 桶名称
+// param objPathName: 桶下全路径对象名称
+// param moveTo: 移动对象到此目录路径，""为不移动, "/"为根目录
+// param rename: 重命名对象，，""为不重命名
+func (client ClientStruct) MoveRenameObject(bucketName, objPathName, moveTo, rename string) (*MoveRenameReturn, error) {
+
+	dirPath, objName := CutPathAndName(objPathName)
+	resp, err := client.API.MoveRenameObject(bucketName, dirPath, objName, moveTo, rename)
+	if err != nil {
+		return nil, err
+	}
+
+	ret := MoveRenameReturn{}
+	if resp.StatusCode == 201 {
+		ret.Ok = true
+		ret.Code = resp.StatusCode
+		json.Unmarshal(resp.Bytes(), &ret)
+		return &ret, nil
+	}
+
+	result2 := ResponseResult(resp)
+	ret.Results = *result2
+	return &ret, nil
+}
+
+// MoveObject 移动一个对象
+// param bucket_name: 桶名称
+// param objPathName: 桶下全路径对象名称
+// param moveTo: 移动对象到此目录路径，""为不移动, "/"为根目录
+func (client ClientStruct) MoveObject(bucketName, objPathName, moveTo string) (*MoveRenameReturn, error) {
+
+	return client.MoveRenameObject(bucketName, objPathName, moveTo, "")
+}
+
+// RenameObject 重命名一个对象
+// param bucket_name: 桶名称
+// param objPathName: 桶下全路径对象名称
+// param rename: 重命名对象，，""为不重命名
+func (client ClientStruct) RenameObject(bucketName, objPathName, rename string) (*MoveRenameReturn, error) {
+
+	return client.MoveRenameObject(bucketName, objPathName, "", rename)
+}
+
+// ObjectPermission 对象公有或私有访问权限设置
+// param bucket_name: 桶名称
+// param objPathName: 桶下全路径对象名称
+// param share: 是否分享公开，用于设置对象公有或私有, true(公有)，false(私有)
+// param days: 对象公开分享天数(share=true时有效)，0表示永久公开，负数表示不公开
+func (client ClientStruct) ObjectPermission(bucketName, objPathName string, share bool, days int) (*Results, error) {
+
+	dirPath, objName := CutPathAndName(objPathName)
+	resp, err := client.API.ObjectPermission(bucketName, dirPath, objName, share, days)
+	if err != nil {
+		return nil, err
+	}
+
+	result := ResponseResult(resp)
+	if resp.StatusCode != 200 {
+		result.Ok = false
+		if result.CodeText == "" {
+			result.CodeText = "Failed to share object"
+		}
+	}
+	return result, nil
+}
+
+// MakeDir 创建一个目录
+// param bucketName: 桶名称
+// param dirPath: 桶下目录所在路径
+// param dirName: 目录名称
+func (client ClientStruct) MakeDir(bucketName, dirPath, dirName string) (*Results, error) {
+
+	var dir DirStruct
+	slice := []string{dirPath, dirName}
+	pathName := buildPath(slice)
+	configs := client.GetConfigs()
+	dir.Init(bucketName, pathName, configs)
+	return dir.MakeDir()
+}
+
+// DeleteDir 删除一个空目录
+// param bucketName: 桶名称
+// param dirPath: 桶下目录路径
+func (client ClientStruct) DeleteDir(bucketName, dirPath string) (*Results, error) {
+
+	var dir DirStruct
+	configs := client.GetConfigs()
+	dir.Init(bucketName, dirPath, configs)
+	return dir.DeleteDir()
+}
+
+// ListDirOnePage 自定义获取一页目录下的子目录和对象信息
+// param bucketName: 桶名称
+// param dirPathName: 桶下全路径目录名称
+// param offset limit: 自定义从offset偏移量处获取limit条信息；offset和limit大于0时，参数有效；
+//  	否则按服务器默认返回数据
+func (client ClientStruct) ListDirOnePage(bucketName, dirPathName string, offset, limit int) (*ListDirReturn, error) {
+	var dir DirStruct
+	configs := client.GetConfigs()
+	dir.Init(bucketName, dirPathName, configs)
+	return dir.ListDirOnePage(offset, limit)
+}
+
+// Dir 获取一个目录结构体实例
+func (client ClientStruct) Dir(bucketName, dirPathName string) *DirStruct {
+	var dir DirStruct
+	configs := client.GetConfigs()
+	dir.Init(bucketName, dirPathName, configs)
+	return &dir
+}
+
+// DirStruct 目录结构体
+type DirStruct struct {
+	bucketName string
+	pathName   string
+	path       string
+	name       string
+	configs    ConfigStruct
+	curPage    *ListDirReturn
+}
+
+// Init 初始化一个目录
+// param bucketName: 同名称
+// param dirPathName: 全路径目录名
+func (dir *DirStruct) Init(bucketName, dirPathName string, configs ConfigStruct) {
+	dir.bucketName = bucketName
+	dir.pathName = dirPathName
+	dirPath, dirName := CutPathAndName(dirPathName)
+	dir.path = dirPath
+	dir.name = dirName
+	dir.configs = configs
+	return
+}
+
+// GetBucketName 获取桶名称
+func (dir DirStruct) GetBucketName() string {
+	return dir.bucketName
+}
+
+// GetDirPath 获取目录父目录路径
+func (dir DirStruct) GetDirPath() string {
+	return dir.path
+}
+
+// GetDirName 获取目录名称
+func (dir DirStruct) GetDirName() string {
+	return dir.name
+}
+
+// GetDirPathName 获取全路径目录名
+func (dir DirStruct) GetDirPathName() string {
+	if dir.pathName == "" {
+		dir.pathName = buildPath([]string{dir.path, dir.name})
+	}
+	return dir.pathName
+}
+
+// MakeDir 创建一个目录
+// param bucketName: 桶名称
+// param dirPath: 桶下目录所在路径
+// param dirName: 目录名称
+func (dir DirStruct) MakeDir() (*Results, error) {
+
+	API := APIWrapper{configs: dir.configs}
+	resp, err := API.MakeDir(dir.GetBucketName(), dir.GetDirPath(), dir.GetDirName())
+	if err != nil {
+		return nil, err
+	}
+
+	result := ResponseResult(resp)
+	if resp.StatusCode == 201 {
+		return result, nil
+	}
+
+	if resp.StatusCode == 400 {
+		s := resp.String()
+		existing, ok, err := GetValueFromJSON("existing", s)
+		if err == nil && ok {
+			if existing.(bool) == true {
+				result.Ok = true
+				result.CodeText = "Directory already exists"
+				return result, nil
+			}
+		}
+	}
+
+	result.Ok = false
+	if result.CodeText == "" {
+		result.CodeText = "Failed to Create directory"
+	}
+
+	return result, nil
+}
+
+// DeleteDir 删除一个空目录
+// param bucketName: 桶名称
+// param dirPath: 桶下目录路径
+func (dir DirStruct) DeleteDir() (*Results, error) {
+
+	API := APIWrapper{configs: dir.configs}
+	resp, err := API.DeleteDir(dir.GetBucketName(), dir.GetDirPath(), dir.GetDirName())
+	if err != nil {
+		return nil, err
+	}
+
+	result := ResponseResult(resp)
+	if resp.StatusCode != 204 {
+		result.Ok = false
+	}
+	return result, nil
+}
+
+type page struct {
+	Current int `json:"current,omitempty"`
+	Final   int `json:"final,omitempty"`
+}
+
+// ListDirReturn 列举目录返回值类型
+type ListDirReturn struct {
+	Results
+	BucketName string           `json:"bucket_name,omitempty"`
+	DirPath    string           `json:"dir_path,omitempty"` // 全路径目录名
+	Count      int              `json:"count,omitempty"`    // 目录下子目录和对象总数
+	Next       string           `json:"next,omitempty"`     // 下一页数据url
+	Previous   string           `json:"previous,omitempty"` // 上一页数据url
+	Page       page             `json:"page,omitempty"`
+	Files      []MetadataStruct `json:"files"`
+}
+
+// HasNext 是否有下一页
+func (ldr ListDirReturn) HasNext() bool {
+	return ldr.Next != ""
+}
+
+// HasPrevious 是否有上一页
+func (ldr ListDirReturn) HasPrevious() bool {
+	return ldr.Previous != ""
+}
+
+// PreviousURL 上一页url
+func (ldr ListDirReturn) PreviousURL() string {
+	return ldr.Previous
+}
+
+// NextURL 下一页url
+func (ldr ListDirReturn) NextURL() string {
+	return ldr.Next
+}
+
+// CurPageNum 当前页码
+func (ldr ListDirReturn) CurPageNum() int {
+	return ldr.Page.Current
+}
+
+// FinalPageNum 最后一页页码
+func (ldr ListDirReturn) FinalPageNum() int {
+	return ldr.Page.Final
+}
+
+// ListDirOnePage 自定义获取一页目录下的子目录和对象信息
+// param offset limit: 自定义从offset偏移量处获取limit条信息；offset和limit大于0时，参数有效；
+//  	否则按服务器默认返回数据
+func (dir DirStruct) ListDirOnePage(offset, limit int) (*ListDirReturn, error) {
+
+	API := APIWrapper{configs: dir.configs}
+	resp, err := API.ListDirOnePage(dir.GetBucketName(), dir.GetDirPath(), dir.GetDirName(), offset, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	return dir.buildListDirReturn(resp)
+}
+
+// buildListDirReturn 列举目录返回值构建
+func (dir DirStruct) buildListDirReturn(resp *grequests.Response) (*ListDirReturn, error) {
+
+	ret := ListDirReturn{}
+	if resp.StatusCode == 200 {
+		err2 := json.Unmarshal(resp.Bytes(), &ret)
+		if err2 != nil {
+			return nil, err2
+		}
+		ret.Ok = true
+		ret.Code = resp.StatusCode
+		return &ret, nil
+	}
+
+	result := ResponseResult(resp)
+	if result.CodeText == "" {
+		result.CodeText = "获取信息失败"
+	}
+	ret.Results = *result
+	return &ret, nil
+}
+
+// ListFirstPage 列举目录下子目录和对象信息第一页数据
+// param numPerPage: 每页数据量
+func (dir *DirStruct) ListFirstPage(numPerPage int) (*ListDirReturn, error) {
+	r, err := dir.ListDirOnePage(0, numPerPage)
+	if err == nil && r.Ok {
+		dir.curPage = r
+	}
+
+	return r, err
+}
+
+// NextPage 获取下一页数据
+// 如果希望自定义每页返回数据量，需要先调用ListFirstPage()获取指定数量的第一页数据, 后可通过NextPage()循环获取下一页数据
+func (dir *DirStruct) NextPage() (*ListDirReturn, error) {
+	if dir.curPage == nil {
+		return dir.ListFirstPage(0)
+	}
+	if !dir.curPage.HasNext() {
+		ret := ListDirReturn{}
+		ret.Ok = false
+		ret.CodeText = "没有下一页了"
+		return &ret, nil
+	}
+	url := dir.curPage.NextURL()
+
+	API := APIWrapper{configs: dir.configs}
+	r, err := API.ListDirOnePageByURL(url)
+	if err != nil {
+		return nil, err
+	}
+
+	ret, err := dir.buildListDirReturn(r)
+	if err == nil && r.Ok {
+		dir.curPage = ret
+	}
+	return ret, err
+}
+
+// PreviousPage 获取下一页数据
+func (dir *DirStruct) PreviousPage() (*ListDirReturn, error) {
+
+	if (dir.curPage == nil) || (!dir.curPage.HasPrevious()) {
+		ret := ListDirReturn{}
+		ret.Ok = false
+		ret.CodeText = "没有上一页"
+		return &ret, nil
+	}
+	url := dir.curPage.PreviousURL()
+
+	API := APIWrapper{configs: dir.configs}
+	r, err := API.ListDirOnePageByURL(url)
+	if err != nil {
+		return nil, err
+	}
+
+	ret, err := dir.buildListDirReturn(r)
+	if err == nil && r.Ok {
+		dir.curPage = ret
+	}
+	return ret, err
 }
