@@ -214,7 +214,9 @@ func (client ClientStruct) GetConfigs() ConfigStruct {
 // ObjMetadataReturn 对象或目录元数据返回结果
 type ObjMetadataReturn struct {
 	Results
-	Data MetadataStruct `json:"data,omitempty"`
+	BucketName string         `json:"bucket_name,omitempty"`
+	DirPath    string         `json:"dir_path,omitempty"`
+	Obj        MetadataStruct `json:"obj,omitempty"`
 }
 
 // GetMetadata 获取元数据
@@ -400,16 +402,7 @@ func (client ClientStruct) DownLoadObject(bucketName, objPathName, savePath stri
 			break
 		}
 
-		s, err := saveFile.Seek(offset, os.SEEK_SET)
-		if err != nil {
-			retErr = err
-			break
-		}
-		if s != offset {
-			retErr = errors.New("seek文件偏移量错误")
-			break
-		}
-		writedSize, err := saveFile.Write(r.Chunk)
+		writedSize, err := saveFile.WriteAt(r.Chunk, offset)
 		if err != nil {
 			retErr = err
 			break

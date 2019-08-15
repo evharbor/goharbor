@@ -13,7 +13,7 @@ func buildPath(slice []string) string {
 	a := []string{}
 	for _, value := range slice {
 		if v := strings.Trim(value, "/"); v != "" {
-			a = append(a, value)
+			a = append(a, v)
 		}
 	}
 	return strings.Join(a, "/")

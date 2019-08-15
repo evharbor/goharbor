@@ -116,9 +116,9 @@ r, err := client.GetMetadata("wwww", "cc/UploadOneChunk2")
 if err != nil {
 	fmt.Println(err)
 } else {
-    fmt.Println(r.Data.Name)
-    fmt.Println(r.Data.FileOrDir)
-    fmt.Println(r.Data.Size)
+    fmt.Println(r.Obj.Name)
+    fmt.Println(r.Obj.FileOrDir)
+    fmt.Println(r.Obj.Size)
 }
 ```
 
